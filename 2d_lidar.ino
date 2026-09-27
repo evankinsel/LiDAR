@@ -9,14 +9,15 @@
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 
 VL53L0X_RangingMeasurementData_t measure;
-const int LIDAR_PIN = 4; (GPIO4)
-const int LIDAR_POWER_PIN = 5; (GPIO5)
-const int LIDAR_RESET_PIN = 15; (GPIO15)
-const int LIDAR_SDA_PIN = 21; (GPIO21)
-const int LIDAR_SCL_PIN = 22; (GPIO22)
-const int LIDAR_FLASH_PIN = 6; (GPIO6) //use for flashing when you get a battery for the ESP32
-const int LIDAR_READING_PIN = 4; (GPIO4) //receives lidar scanning data output
-const int LIDAR_I2C_ADDRESS = 0x29; (default I2C address for VL53L0X)
+
+const int LIDAR_PIN = 4; // (GPIO4)
+const int LIDAR_POWER_PIN = 5; // (GPIO5)
+const int LIDAR_RESET_PIN = 15; // (GPIO15)
+const int LIDAR_SDA_PIN = 21; // (GPIO21)
+const int LIDAR_SCL_PIN = 22; // (GPIO22)
+const int LIDAR_FLASH_PIN = 6; // (GPIO6) //use for flashing when you get a battery for the ESP32
+const int LIDAR_READING_PIN = 4; // (GPIO4) //receives lidar scanning data output
+const int LIDAR_I2C_ADDRESS = 0x29; // (default I2C address for VL53L0X)
 
 const float PI = 3.14159265f; // define pi for angle calculations
 
@@ -25,18 +26,18 @@ float readings[SAMPLE_SIZE];
 
 float x;
 float y;
-float A; 
+float A;
 
 
-void setup() { 
+void setup() {
   //esp32 initialization for constant/automatic sensor reading
   
   // put your setup code here, to run once:
-    // put your main code here, to run repeatedly:
+  // put your main code here, to run repeatedly:
   Serial.begin(115200);
 
-  while (! Serial) { 
-    delay (1);
+  while (!Serial) {
+    delay(1);
   }
 
   lox.begin();
@@ -45,8 +46,8 @@ void setup() {
   lox.setSignalRateLimit(0.1); // set signal rate limit to 0.1 MCPS
   lox.setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, 18); // first laser range
   lox.setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 14); // second laser range (more detailed)
-
 }
+
 
 void loop() {
 
@@ -63,14 +64,14 @@ void loop() {
   lox.rangingTest(&measure, false); // pass in 'true' to get all the extra debug data printout
 
   if (measure.RangeStatus != 4) {  // phase failures have incorrect data
-    
+
     Serial.print("Distance (mm): ");
     Serial.println(measure.RangeMilliMeter);
 
-    A = 90; // example angle for now since itll be pointing upward 
-    
-const float DEG_TO_RAD = PI / 180.0f; // conversion from degrees to radians
-    float radians = A * DEG_TO_RAD; 
+    A = 90; // example angle for now since itll be pointing upward
+
+    const float DEG_TO_RAD = PI / 180.0f; // conversion from degrees to radians
+    float radians = A * DEG_TO_RAD;
     float distance = measure.RangeMilliMeter; // example radius for now
 
     x = distance * cos(radians);
@@ -84,28 +85,30 @@ const float DEG_TO_RAD = PI / 180.0f; // conversion from degrees to radians
 
   } else {
     Serial.println(" out of range ");
-
-    if (measure.RangeStatus != 4) {  // phase failures have incorrect data
-      display.clearDisplay();
-      display.setCursor(0,0);
-      display.print(measure.RangeMilliMeter);
-      display.print("mm");
-      display.display();
-      Serial.println();
-      delay(50);
-       else {
-        display.display();
-        display.clearDisplay();
-    return;  
-    
   }
-  
-//void Loop() {
-//float distance * A 
+
+  if (measure.RangeStatus != 4) {  // phase failures have incorrect data
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.print(measure.RangeMilliMeter);
+    display.print("mm");
+    display.display();
+    Serial.println();
+    delay(50);
+
+  } else {
+    display.display();
+    display.clearDisplay();
+    return;
+  }
+
+  //void Loop() {
+  //float distance * A 
 
   {
     delay(100);
   }
-}
+
   //this also will allow me to flash it which is cool but yea, need to make sure it works first then prints on serial
   //monitor then prints on oled after that
+}
