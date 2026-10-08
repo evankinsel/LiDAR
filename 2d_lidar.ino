@@ -1,114 +1,160 @@
-#include <SPI.h>
+#include <Wire.h>
 #include <Adafruit_VL53L0X.h>
-#include <Arduino.h>
+#include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <cmath> // used for the cos and sin math
+#include <ESP32Servo.h>
+#include <math.h>
 
+constexpr int I2C_SDA_PIN = 21;
+constexpr int I2C_SCL_PIN = 22;
+constexpr int SERVO_PIN = 18;
 
-//variable land
-Adafruit_VL53L0X lox = Adafruit_VL53L0X();
+constexpr uint8_t OLED_ADDRESS = 0x3C;
+constexpr int SCREEN_WIDTH = 128;
+constexpr int SCREEN_HEIGHT = 64;
+constexpr int OLED_RESET = -1;
+
+constexpr int MIN_ANGLE_DEG = 20;
+constexpr int MAX_ANGLE_DEG = 160;
+constexpr int ANGLE_STEP_DEG = 2;
+constexpr uint16_t SERVO_SETTLE_MS = 45;
+constexpr uint16_t BETWEEN_SWEEPS_MS = 250;
+constexpr uint16_t MIN_VALID_MM = 30;
+constexpr uint16_t MAX_VALID_MM = 1800;
+
+constexpr float PI_F = 3.14159265359f;
+constexpr float DEG_TO_RAD = PI_F / 180.0f;
+
+Adafruit_VL53L0X lox;
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+Servo scannerServo;
 
 VL53L0X_RangingMeasurementData_t measure;
 
-const int LIDAR_PIN = 4; // (GPIO4)
-const int LIDAR_POWER_PIN = 5; // (GPIO5)
-const int LIDAR_RESET_PIN = 15; // (GPIO15)
-const int LIDAR_SDA_PIN = 21; // (GPIO21)
-const int LIDAR_SCL_PIN = 22; // (GPIO22)
-const int LIDAR_FLASH_PIN = 6; // (GPIO6) //use for flashing when you get a battery for the ESP32
-const int LIDAR_READING_PIN = 4; // (GPIO4) //receives lidar scanning data output
-const int LIDAR_I2C_ADDRESS = 0x29; // (default I2C address for VL53L0X)
+int currentAngle = MIN_ANGLE_DEG;
+int angleDirection = 1;
 
-const float PI = 3.14159265f; // define pi for angle calculations
-
-const int SAMPLE_SIZE = 2000;
-float readings[SAMPLE_SIZE];
-
-float x;
-float y;
-float A;
-
-
-void setup() {
-  //esp32 initialization for constant/automatic sensor reading
-  
-  // put your setup code here, to run once:
-  // put your main code here, to run repeatedly:
-  Serial.begin(115200);
-
-  while (!Serial) {
-    delay(1);
-  }
-
-  lox.begin();
-  lox.startContinuous();
-  lox.setMeasurementTimingBudgetMicroSeconds(20000); // set timing budget to 20ms
-  lox.setSignalRateLimit(0.1); // set signal rate limit to 0.1 MCPS
-  lox.setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, 18); // first laser range
-  lox.setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 14); // second laser range (more detailed)
+void showFatalError(const char *message) {
+  Serial.println(message);
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("2D LIDAR ERROR");
+  display.println(message);
+  display.display();
 }
 
+void drawReading(bool valid, uint16_t distanceMm, float xMm, float yMm) {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("2D LIDAR SCANNER");
+  display.print("Angle: ");
+  display.print(currentAngle);
+  display.println(" deg");
+
+  if (valid) {
+    display.print("Range: ");
+    display.print(distanceMm);
+    display.println(" mm");
+    display.print("X: ");
+    display.print(xMm, 0);
+    display.print("  Y: ");
+    display.println(yMm, 0);
+  } else {
+    display.println("Range: invalid");
+    display.print("Status: ");
+    display.println(measure.RangeStatus);
+  }
+
+  display.display();
+}
+
+void advanceScanAngle() {
+  currentAngle += angleDirection * ANGLE_STEP_DEG;
+
+  if (currentAngle >= MAX_ANGLE_DEG) {
+    currentAngle = MAX_ANGLE_DEG;
+    angleDirection = -1;
+    delay(BETWEEN_SWEEPS_MS);
+  } else if (currentAngle <= MIN_ANGLE_DEG) {
+    currentAngle = MIN_ANGLE_DEG;
+    angleDirection = 1;
+    delay(BETWEEN_SWEEPS_MS);
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(250);
+
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
+    Serial.println("SSD1306 initialization failed.");
+    while (true) {
+      delay(1000);
+    }
+  }
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("Starting 2D LIDAR...");
+  display.display();
+
+  if (!lox.begin()) {
+    showFatalError("VL53L0X not found");
+    while (true) {
+      delay(1000);
+    }
+  }
+
+  scannerServo.setPeriodHertz(50);
+  scannerServo.attach(SERVO_PIN, 500, 2400);
+  scannerServo.write(currentAngle);
+  delay(500);
+
+  Serial.println("format: SCAN,angle_deg,distance_mm,x_mm,y_mm");
+}
 
 void loop() {
+  scannerServo.write(currentAngle);
+  delay(SERVO_SETTLE_MS);
 
-  Serial.println("Adafruit VL53L0X test");
+  lox.rangingTest(&measure, false);
 
-  Serial.print("Reading a measurement... ");
+  const uint16_t distanceMm = measure.RangeMilliMeter;
+  const bool validMeasurement =
+      measure.RangeStatus != 4 &&
+      distanceMm >= MIN_VALID_MM &&
+      distanceMm <= MAX_VALID_MM;
 
-  //rangingtest function to get the distance measurement from the sensor
-  //measure stores the disntace value in mm
-  //the & means that the function takes the address of the measure variable, so it can modify it directly
-  // so bascially the "&" in &measure passes all the data into measure
-  // and pulls all the data for every mention of it later, from that specific &measure. 
-  // updates the numbers inside the function, and then uses the updated values in the main code like measure.RangeMilliMeter.
-  lox.rangingTest(&measure, false); // pass in 'true' to get all the extra debug data printout
+  if (validMeasurement) {
+    const float radians = currentAngle * DEG_TO_RAD;
+    const float xMm = distanceMm * cosf(radians);
+    const float yMm = distanceMm * sinf(radians);
 
-  if (measure.RangeStatus != 4) {  // phase failures have incorrect data
+    Serial.print("SCAN,");
+    Serial.print(currentAngle);
+    Serial.print(',');
+    Serial.print(distanceMm);
+    Serial.print(',');
+    Serial.print(xMm, 2);
+    Serial.print(',');
+    Serial.println(yMm, 2);
 
-    Serial.print("Distance (mm): ");
-    Serial.println(measure.RangeMilliMeter);
-
-    A = 90; // example angle for now since itll be pointing upward
-
-    const float DEG_TO_RAD = PI / 180.0f; // conversion from degrees to radians
-    float radians = A * DEG_TO_RAD;
-    float distance = measure.RangeMilliMeter; // example radius for now
-
-    x = distance * cos(radians);
-    y = distance * sin(radians);
-
-    Serial.print("X: ");
-    Serial.println(x);
-
-    Serial.print("Y: ");
-    Serial.println(y);
-
+    drawReading(true, distanceMm, xMm, yMm);
   } else {
-    Serial.println(" out of range ");
+    Serial.print("INVALID,");
+    Serial.print(currentAngle);
+    Serial.print(",status,");
+    Serial.println(measure.RangeStatus);
+    drawReading(false, distanceMm, 0.0f, 0.0f);
   }
 
-  if (measure.RangeStatus != 4) {  // phase failures have incorrect data
-    display.clearDisplay();
-    display.setCursor(0, 0);
-    display.print(measure.RangeMilliMeter);
-    display.print("mm");
-    display.display();
-    Serial.println();
-    delay(50);
-
-  } else {
-    display.display();
-    display.clearDisplay();
-    return;
-  }
-
-  //void Loop() {
-  //float distance * A 
-
-  {
-    delay(100);
-  }
-
-  //this also will allow me to flash it which is cool but yea, need to make sure it works first then prints on serial
-  //monitor then prints on oled after that
+  advanceScanAngle();
 }
