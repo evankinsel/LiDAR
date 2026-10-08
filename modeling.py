@@ -1,31 +1,123 @@
+import time
+
 import numpy as np
 import open3d as o3d
+import serial
 
-# 1. Load a point cloud data file (not a .py file)
-pcd = o3d.io.read_point_cloud("input_cloud.ply")
-print(f"Total points: {len(pcd.points)}") 
-#len means the length of the array, which is the number of points in the point cloud.
+SERIAL_PORT = "COM3"
+BAUD_RATE = 115200
+VOXEL_SIZE_METERS = 0.02
+TARGET_COUNT = 50000
+UPDATE_INTERVAL_SECONDS = 0.20
+OUTPUT_FILE = "captured_point_cloud.ply"
+REQUIRE_FULL_CALIBRATION = False
 
-# 2. This extracts the coordinates from sensor and turn into a NumPy array
-points = np.asarray(pcd.points)
+
+def parse_point(line):
+    fields = line.strip().split(",")
+
+    if len(fields) != 14 or fields[0] != "POINT":
+        return None
+
+    try:
+        x_mm = float(fields[7])
+        y_mm = float(fields[8])
+        z_mm = float(fields[9])
+        system_calibration = int(fields[10])
+        gyro_calibration = int(fields[11])
+        accel_calibration = int(fields[12])
+        magnetometer_calibration = int(fields[13])
+    except ValueError:
+        return None
+
+    if REQUIRE_FULL_CALIBRATION and min(
+        system_calibration,
+        gyro_calibration,
+        accel_calibration,
+        magnetometer_calibration,
+    ) < 3:
+        return None
+
+    return np.array([x_mm, y_mm, z_mm], dtype=np.float64) / 1000.0
 
 
-#"Voxel downsampling" is  when points falling within the same voxel boundaries are averaged into a single point."
-pcd = pcd.voxel_down_sample(voxel_size=0.05)
+def downsample(points):
+    raw_cloud = o3d.geometry.PointCloud()
+    raw_cloud.points = o3d.utility.Vector3dVector(points)
 
-# Stage 2: Safe Downsampling Guard
-if len(points) <= target_count:
-    # nothing should happen here 
-    final_points = points
-else:
-    # Further downsampling should happen if it's still too heavy. (great than target_count)
-    # If voxel downsampling left you with 5,000 points, but target is 1,000:
-    step = len(points) // target_count
-    final_points = points[::step][:target_count]
-    
-#3. Visualize the final 3D model in point cloud format instead of mesh for now at least
-o3d.visualization.draw_geometries([pcd], window_name="3D Model", width=800, height=600, left=50, top=50, point_show_normal=False)
+    cloud = raw_cloud.voxel_down_sample(voxel_size=VOXEL_SIZE_METERS)
+    cloud_points = np.asarray(cloud.points)
 
-#4 
-pcd.points = o3d.utility.Vector3dVector(final_points)
-print(f"Final points after downsampling: {len(pcd.points)}")
+    if len(cloud_points) <= TARGET_COUNT:
+        return cloud
+
+    indices = np.linspace(0, len(cloud_points) - 1, TARGET_COUNT, dtype=int)
+    limited_cloud = o3d.geometry.PointCloud()
+    limited_cloud.points = o3d.utility.Vector3dVector(cloud_points[indices])
+    return limited_cloud
+
+
+def main():
+    serial_connection = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.05)
+    time.sleep(2)
+    serial_connection.reset_input_buffer()
+
+    visualizer = o3d.visualization.Visualizer()
+    visualizer.create_window(
+        window_name="ESP32 3D Point Cloud",
+        width=1000,
+        height=700,
+    )
+
+    display_cloud = o3d.geometry.PointCloud()
+    coordinate_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.20)
+
+    visualizer.add_geometry(display_cloud)
+    visualizer.add_geometry(coordinate_frame)
+    visualizer.get_render_option().point_size = 3.0
+
+    captured_points = []
+    last_update = time.monotonic()
+
+    print(f"Listening on {SERIAL_PORT} at {BAUD_RATE} baud")
+    print("Close the Open3D window or press Ctrl+C to save the cloud.")
+
+    try:
+        while visualizer.poll_events():
+            raw_line = serial_connection.readline().decode("utf-8", errors="ignore")
+            point = parse_point(raw_line)
+
+            if point is not None:
+                captured_points.append(point)
+
+            now = time.monotonic()
+
+            if captured_points and now - last_update >= UPDATE_INTERVAL_SECONDS:
+                display_cloud = downsample(np.asarray(captured_points))
+                visualizer.clear_geometries()
+                visualizer.add_geometry(display_cloud)
+                visualizer.add_geometry(coordinate_frame)
+                visualizer.update_renderer()
+                print(
+                    f"Raw points: {len(captured_points)} | "
+                    f"Displayed points: {len(display_cloud.points)}"
+                )
+                last_update = now
+
+    except KeyboardInterrupt:
+        pass
+
+    finally:
+        serial_connection.close()
+        visualizer.destroy_window()
+
+    if captured_points:
+        final_cloud = downsample(np.asarray(captured_points))
+        o3d.io.write_point_cloud(OUTPUT_FILE, final_cloud)
+        print(f"Saved {len(final_cloud.points)} points to {OUTPUT_FILE}")
+    else:
+        print("No valid POINT data was captured.")
+
+
+if __name__ == "__main__":
+    main()
